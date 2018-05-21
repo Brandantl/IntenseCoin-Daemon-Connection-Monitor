@@ -27,7 +27,7 @@ int main()
     std::map<std::string, Connection> connectMap;
     Poco::Mutex mu;
 
-    // Save map to disk.
+    // Load map from disk.
     std::ifstream in("connect_map.json");
     if (in.is_open())
     {
@@ -38,6 +38,44 @@ int main()
         }
         in.close();
     }
+
+    auto serverThread = [&mu, &connectMap]()
+    {
+        Poco::Net::ServerSocket srv(9098); // does bind + listen
+        for (;;)
+        {
+            Poco::Net::StreamSocket ss = srv.acceptConnection();
+            Poco::Net::SocketStream str(ss);
+
+            std::cout << "New Connection: " << ss.address() << '\n';
+
+            mu.lock();
+            std::stringstream strstrm;
+            {
+                cereal::JSONOutputArchive ar(strstrm);
+                ar(CEREAL_NVP(connectMap));
+            }
+            mu.unlock();
+            std::string data = strstrm.str();
+
+            // Remove white space
+            data.erase(std::remove(data.begin(), data.end(), '\n'), data.end());
+            data.erase(std::remove(data.begin(), data.end(), '\r'), data.end());
+            data.erase(std::remove(data.begin(), data.end(), '\t'), data.end());
+            data.erase(std::remove(data.begin(), data.end(), ' '), data.end());
+
+            str <<
+                "HTTP/1.0 200 OK\r\n"
+                "Content-Type: application/json\r\n";
+            str << "Content-Length: " << data.length() << "\r\n" << "\r\n"
+                << data
+                << std::flush;
+
+            ss.close();
+        }
+    };
+    std::thread td(serverThread);
+    td.detach();
 
     while (true)
     {
@@ -77,42 +115,6 @@ int main()
                 out.close();
             }
         }
-
-        auto serverThread = [&mu, &connectMap]()
-        {
-            Poco::Net::ServerSocket srv(9098); // does bind + listen
-            for (;;)
-            {
-                Poco::Net::StreamSocket ss = srv.acceptConnection();
-                Poco::Net::SocketStream str(ss);
-
-                std::cout << "New Connection: " << ss.address() << '\n';
-
-                mu.lock();
-                std::stringstream strstrm;
-                {
-                    cereal::JSONOutputArchive ar(strstrm);
-                    ar(CEREAL_NVP(connectMap));
-                }
-                mu.unlock();
-                std::string data = strstrm.str();
-
-                // Remove white space
-                data.erase(std::remove(data.begin(), data.end(), '\n'), data.end());
-                data.erase(std::remove(data.begin(), data.end(), '\r'), data.end());
-                data.erase(std::remove(data.begin(), data.end(), '\t'), data.end());
-                data.erase(std::remove(data.begin(), data.end(), ' '), data.end());
-
-                str <<
-                    "HTTP/1.0 200 OK\r\n"
-                    "Content-Type: application/json\r\n";
-                str << "Content-Length: " << data.length() << "\r\n" << "\r\n"
-                    << data
-                    << std::flush;
-            }
-        };
-        std::thread td(serverThread);
-        td.detach();
         Poco::Thread::sleep(1000);
     }
 
